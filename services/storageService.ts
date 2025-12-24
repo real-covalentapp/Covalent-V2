@@ -2,23 +2,43 @@ import { FormResponse, StorageResult } from '../types';
 
 /**
  * CLOUDSUBMIT PRO - PERSISTENCE SERVICE
- * Optimized for mobile networks and cross-device synchronization.
+ * Optimized for high-reliability mobile synchronization.
  */
 
-// Use a unique, verified public bin ID. 
-// If this specific ID fails, the code will fall back gracefully.
-const BIN_ID = '062d6b38c35064560d2b'; 
+// Fresh Bin ID to ensure clean state and avoid rate limits
+const BIN_ID = 'e9c8a9c298084a4f89d1'; 
 const CLOUD_URL = `https://api.npoint.io/${BIN_ID}`;
+
+const wait = (ms: number) => new Promise(res => setTimeout(res, ms));
+
+const robustFetch = async (url: string, options: RequestInit, retries = 3): Promise<Response> => {
+  try {
+    const response = await fetch(url, {
+      ...options,
+      credentials: 'omit',
+      mode: 'cors',
+      keepalive: true // Essential for mobile reliability
+    });
+    
+    if (!response.ok && retries > 0) {
+      await wait(1000 * (4 - retries)); // Exponential backoff
+      return robustFetch(url, options, retries - 1);
+    }
+    return response;
+  } catch (err) {
+    if (retries > 0) {
+      await wait(1000 * (4 - retries));
+      return robustFetch(url, options, retries - 1);
+    }
+    throw err;
+  }
+};
 
 export const storageService = {
   /**
-   * Pushes a new response to the cloud.
-   * Uses a robust fetch implementation to bypass mobile browser restrictions.
+   * Pushes a new response to the cloud with retry logic.
    */
   saveResponse: async (response: Omit<FormResponse, 'id' | 'timestamp' | 'device'>): Promise<StorageResult> => {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 15000); // 15s timeout for mobile
-
     try {
       const newEntry: FormResponse = {
         ...response,
@@ -28,96 +48,76 @@ export const storageService = {
                 ? 'Mobile' : 'Desktop'
       };
 
-      // 1. Fetch current data with mobile-friendly options
+      // 1. Fetch existing data
       let currentData: FormResponse[] = [];
-      try {
-        const getRes = await fetch(`${CLOUD_URL}?t=${Date.now()}`, {
-          method: 'GET',
-          signal: controller.signal,
-          headers: { 'Accept': 'application/json' },
-          credentials: 'omit', // Crucial for mobile CORS
-          mode: 'cors'
-        });
-        
-        if (getRes.ok) {
-          const data = await getRes.json();
-          currentData = Array.isArray(data) ? data : [];
-        }
-      } catch (e) {
-        console.warn("Initializing new cloud stream...");
+      const getRes = await robustFetch(`${CLOUD_URL}?nocache=${Date.now()}`, {
+        method: 'GET',
+        headers: { 'Accept': 'application/json' }
+      });
+      
+      if (getRes.ok) {
+        const data = await getRes.json();
+        currentData = Array.isArray(data) ? data : [];
       }
 
-      // 2. Combine and prune (keep last 50 for speed)
-      const updatedData = [newEntry, ...currentData].slice(0, 50);
+      // 2. Append and keep only recent items for performance
+      const updatedData = [newEntry, ...currentData].slice(0, 100);
 
-      // 3. POST to cloud with specific mobile-optimized settings
-      const postRes = await fetch(CLOUD_URL, {
+      // 3. Post back to cloud
+      const postRes = await robustFetch(CLOUD_URL, {
         method: 'POST',
-        signal: controller.signal,
         headers: { 
           'Content-Type': 'application/json',
           'Accept': 'application/json'
         },
-        body: JSON.stringify(updatedData),
-        credentials: 'omit',
-        mode: 'cors'
+        body: JSON.stringify(updatedData)
       });
 
-      clearTimeout(timeoutId);
-
       if (!postRes.ok) {
-        throw new Error(`Sync Error: ${postRes.status}`);
+        throw new Error(`Cloud Sync failed with status: ${postRes.status}`);
       }
       
       return { success: true, message: 'Cloud Synchronized' };
     } catch (error: any) {
-      clearTimeout(timeoutId);
-      console.error("Cloud Error Details:", error);
-      
-      // Detailed error for debugging on mobile
-      const errorMsg = error.name === 'AbortError' 
-        ? 'Connection Timeout. Please check your signal.' 
-        : 'Cloud Sync Failed. Try switching from Wi-Fi to Data or vice versa.';
-
-      return { success: false, message: errorMsg };
+      console.error("Cloud Sync Error:", error);
+      return { 
+        success: false, 
+        message: 'Sync error. Your mobile network may be blocking the cloud provider. Please try again or toggle your Wi-Fi.' 
+      };
     }
   },
 
   /**
-   * Pulls all data for the Admin Dashboard
+   * Pulls all responses for the Admin Dashboard
    */
   getAllResponses: async (): Promise<FormResponse[]> => {
     try {
-      const res = await fetch(`${CLOUD_URL}?t=${Date.now()}`, {
+      const res = await robustFetch(`${CLOUD_URL}?nocache=${Date.now()}`, {
         method: 'GET',
-        headers: { 'Accept': 'application/json' },
-        credentials: 'omit',
-        mode: 'cors'
+        headers: { 'Accept': 'application/json' }
       });
       
       if (!res.ok) return [];
       const data = await res.json();
       return Array.isArray(data) ? data : [];
     } catch (error) {
-      console.error("Dashboard Fetch Error:", error);
+      console.error("Dashboard pull failed:", error);
       return [];
     }
   },
 
   /**
-   * Wipes the bin
+   * Resets the cloud data
    */
   clearResponses: async (): Promise<void> => {
     try {
-      await fetch(CLOUD_URL, {
+      await robustFetch(CLOUD_URL, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify([]),
-        credentials: 'omit',
-        mode: 'cors'
+        body: JSON.stringify([])
       });
     } catch (error) {
-      console.error("Reset Failed:", error);
+      console.error("Cloud wipe failed:", error);
     }
   }
 };

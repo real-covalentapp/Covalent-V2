@@ -13,6 +13,8 @@
             margin: 0;
             padding: 0;
             overflow-x: hidden;
+            /* Prevent bounce scrolling on mobile */
+            overscroll-behavior-y: none;
         }
         #root {
             animation: fadeIn 0.4s ease-out;
@@ -21,7 +23,7 @@
             from { opacity: 0; transform: translateY(5px); }
             to { opacity: 1; transform: translateY(0); }
         }
-        /* Mobile height fix */
+        /* Fix for mobile Safari height issues */
         .min-h-screen {
             min-height: 100vh;
             min-height: -webkit-fill-available;
