@@ -1,50 +1,91 @@
 
 import { FormResponse, StorageResult } from '../types';
 
-const STORAGE_KEY = 'cloudsubmit_responses';
-
 /**
- * In a real-world scenario, these methods would call a backend API
- * (e.g., Firebase, AWS Lambda, or a dedicated Node.js server)
- * to ensure cross-device synchronization. 
- * 
- * For this implementation, we use localStorage to demonstrate the UI 
- * and data handling flow.
+ * CLOUDSUBMIT PRO - PERSISTENCE SERVICE
+ * To achieve true cross-device sync, we use a public JSON storage API (npoint.io).
+ * This acts as a central cloud database shared by all instances of the app.
  */
 
+// A unique public bin ID for this specific application instance
+const BIN_ID = '062d6b38c35064560d2b'; 
+const CLOUD_URL = `https://api.npoint.io/${BIN_ID}`;
+
 export const storageService = {
+  /**
+   * Fetches the current state from the cloud, adds the new response, 
+   * and pushes the updated array back.
+   */
   saveResponse: async (response: Omit<FormResponse, 'id' | 'timestamp' | 'device'>): Promise<StorageResult> => {
     try {
-      // Simulate network latency
-      await new Promise(resolve => setTimeout(resolve, 800));
+      // 1. Fetch current cloud data
+      let responses: FormResponse[] = [];
+      try {
+        const getRes = await fetch(CLOUD_URL);
+        if (getRes.ok) {
+          const data = await getRes.json();
+          // If the bin is empty or not an array, default to empty list
+          responses = Array.isArray(data) ? data : [];
+        }
+      } catch (e) {
+        console.warn("Initializing new cloud bin...");
+      }
 
-      const existingData = localStorage.getItem(STORAGE_KEY);
-      const responses: FormResponse[] = existingData ? JSON.parse(existingData) : [];
-      
+      // 2. Prepare new entry
       const newResponse: FormResponse = {
         ...response,
         id: Math.random().toString(36).substr(2, 9),
         timestamp: Date.now(),
-        device: window.navigator.userAgent.includes('Mobile') ? 'Mobile' : 'Desktop'
+        device: /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent) 
+                ? 'Mobile' : 'Desktop'
       };
 
+      // 3. Update collection (newest first)
       responses.unshift(newResponse);
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(responses));
+
+      // 4. Push back to Cloud
+      const putRes = await fetch(CLOUD_URL, {
+        method: 'POST', // npoint uses POST to update bin content
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(responses)
+      });
+
+      if (!putRes.ok) throw new Error("Cloud update failed");
       
-      return { success: true, message: 'Response submitted to the cloud successfully!' };
+      return { success: true, message: 'Response synced to cloud successfully!' };
     } catch (error) {
-      return { success: false, message: 'Failed to sync with cloud. Please try again.' };
+      console.error("Cloud Error:", error);
+      return { success: false, message: 'Cloud sync failed. Connection issue.' };
     }
   },
 
+  /**
+   * Retrieves all responses from the shared cloud bin.
+   */
   getAllResponses: async (): Promise<FormResponse[]> => {
-    // Simulate network latency
-    await new Promise(resolve => setTimeout(resolve, 600));
-    const data = localStorage.getItem(STORAGE_KEY);
-    return data ? JSON.parse(data) : [];
+    try {
+      const res = await fetch(CLOUD_URL);
+      if (!res.ok) return [];
+      const data = await res.json();
+      return Array.isArray(data) ? data : [];
+    } catch (error) {
+      console.error("Fetch Error:", error);
+      return [];
+    }
   },
 
+  /**
+   * Resets the cloud bin to an empty array.
+   */
   clearResponses: async (): Promise<void> => {
-    localStorage.removeItem(STORAGE_KEY);
+    try {
+      await fetch(CLOUD_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify([])
+      });
+    } catch (error) {
+      console.error("Clear Error:", error);
+    }
   }
 };
